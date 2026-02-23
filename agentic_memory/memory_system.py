@@ -19,6 +19,7 @@ from pathlib import Path
 from litellm import completion
 import time
 
+# Initialize logger for debugging and tracking
 logger = logging.getLogger(__name__)
 
 class MemoryNote:
@@ -48,37 +49,43 @@ class MemoryNote:
         """Initialize a new memory note with its associated metadata.
         
         Args:
-            content (str): The main text content of the memory
-            id (Optional[str]): Unique identifier for the memory. If None, a UUID will be generated
-            keywords (Optional[List[str]]): Key terms extracted from the content
-            links (Optional[Dict]): References to related memories
-            retrieval_count (Optional[int]): Number of times this memory has been accessed
-            timestamp (Optional[str]): Creation time in format YYYYMMDDHHMM
-            last_accessed (Optional[str]): Last access time in format YYYYMMDDHHMM
-            context (Optional[str]): The broader context or domain of the memory
-            evolution_history (Optional[List]): Record of how the memory has evolved
-            category (Optional[str]): Classification category
-            tags (Optional[List[str]]): Additional classification tags
+            content (str): The main content of the memory note.
+            id (Optional[str]): Unique identifier for the memory note. Defaults to a UUID if not provided.
+            keywords (Optional[List[str]]): List of keywords associated with the memory.
+            links (Optional[Dict]): Links to other related memories.
+            retrieval_count (Optional[int]): Number of times this memory has been retrieved.
+            timestamp (Optional[str]): Creation timestamp of the memory.
+            last_accessed (Optional[str]): Last accessed timestamp of the memory.
+            context (Optional[str]): Contextual information about the memory.
+            evolution_history (Optional[List]): History of changes made to the memory.
+            category (Optional[str]): Category or type of the memory.
+            tags (Optional[List[str]]): Tags associated with the memory.
         """
-        # Core content and ID
+        # Store the main content of the memory
         self.content = content
+        # Assign a unique ID if not provided
         self.id = id or str(uuid.uuid4())
-        
-        # Semantic metadata
+        # Keywords for semantic understanding
         self.keywords = keywords or []
-        self.links = links or []
-        self.context = context or "General"
-        self.category = category or "Uncategorized"
-        self.tags = tags or []
-        
-        # Temporal information
-        current_time = datetime.now().strftime("%Y%m%d%H%M")
-        self.timestamp = timestamp or current_time
-        self.last_accessed = last_accessed or current_time
-        
-        # Usage and evolution data
+        # Links to related memories
+        self.links = links or {}
+        # Count of retrievals for usage tracking
         self.retrieval_count = retrieval_count or 0
+        # Creation timestamp
+        self.timestamp = timestamp or datetime.now().isoformat()
+        # Last accessed timestamp
+        self.last_accessed = last_accessed or datetime.now().isoformat()
+        # Contextual metadata
+        self.context = context
+        # History of changes for tracking evolution
         self.evolution_history = evolution_history or []
+        # Category for classification
+        self.category = category
+        # Tags for quick identification
+        self.tags = tags or []
+
+        # Log the creation of a new memory note
+        logger.debug(f"MemoryNote created with ID: {self.id}")
 
 class AgenticMemorySystem:
     """Core memory system that manages memory notes and their evolution.

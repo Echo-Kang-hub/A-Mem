@@ -12,6 +12,14 @@ from nltk.tokenize import word_tokenize
 
 
 def simple_tokenize(text):
+    """
+    对输入文本进行简单分词。
+    
+    参数:
+        text (str): 输入的文本。
+    返回:
+        List[str]: 分词后的列表。
+    """
     return word_tokenize(text)
 
 
@@ -21,10 +29,12 @@ def _clone_collection(
     batch_size: int = 10
 ):
     """
-    Copies one ChromaDB collection to another. 
-    Enables duplicating of collections.
-    This seemed to be the only (best) way to do this as the official ChromaDB
-        docs also suggest this method:
+    将一个 ChromaDB 集合复制到另一个集合。
+    
+    参数:
+        src (chromadb.Collection): 源集合。
+        dest (chromadb.Collection): 目标集合。
+        batch_size (int): 每次复制的批量大小，默认为 10。
     """
     existing_count = src.count()
     for i in range(0, existing_count, batch_size):
@@ -40,17 +50,21 @@ def _clone_collection(
 
 
 class ChromaRetriever:
-    """Vector database retrieval using ChromaDB"""
+    """
+    使用 ChromaDB 的向量数据库检索器。
+    """
 
     def __init__(
         self, 
         collection_name: str = "memories", 
         model_name: str = "all-MiniLM-L6-v2"
     ):
-        """Initialize ChromaDB retriever.
-
-        Args:
-            collection_name: Name of the ChromaDB collection
+        """
+        初始化 ChromaDB 检索器。
+        
+        参数:
+            collection_name (str): 集合名称，默认为 "memories"。
+            model_name (str): 嵌入模型名称，默认为 "all-MiniLM-L6-v2"。
         """
         self.client = chromadb.Client(Settings(allow_reset=True))
         self.embedding_function = SentenceTransformerEmbeddingFunction(

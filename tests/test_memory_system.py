@@ -3,8 +3,13 @@ from agentic_memory.memory_system import AgenticMemorySystem, MemoryNote
 from datetime import datetime
 
 class TestAgenticMemorySystem(unittest.TestCase):
+    """
+    测试 AgenticMemorySystem 类的功能。
+    """
     def setUp(self):
-        """Set up test environment before each test."""
+        """
+        在每个测试之前设置测试环境。
+        """
         self.memory_system = AgenticMemorySystem(
             model_name='all-MiniLM-L6-v2',
             llm_backend="openai",
@@ -12,13 +17,15 @@ class TestAgenticMemorySystem(unittest.TestCase):
         )
         
     def test_create_memory(self):
-        """Test creating a new memory with complete metadata."""
-        content = "Test memory content"
-        tags = ["test", "memory"]
-        keywords = ["test", "content"]
-        links = ["link1", "link2"]
-        context = "Test context"
-        category = "Test category"
+        """
+        测试创建一个新的记忆单元并验证其元数据。
+        """
+        content = "测试记忆内容"
+        tags = ["测试", "记忆"]
+        keywords = ["测试", "内容"]
+        links = ["链接1", "链接2"]
+        context = "测试上下文"
+        category = "测试类别"
         timestamp = datetime.now().strftime("%Y%m%d%H%M")
         
         memory_id = self.memory_system.add_note(
@@ -31,7 +38,7 @@ class TestAgenticMemorySystem(unittest.TestCase):
             timestamp=timestamp
         )
         
-        # Verify memory was created
+        # 验证记忆是否创建成功
         self.assertIsNotNone(memory_id)
         memory = self.memory_system.read(memory_id)
         self.assertIsNotNone(memory)
@@ -44,14 +51,16 @@ class TestAgenticMemorySystem(unittest.TestCase):
         self.assertEqual(memory.timestamp, timestamp)
         
     def test_memory_metadata_persistence(self):
-        """Test that memory metadata persists through ChromaDB storage and retrieval."""
-        # Create a memory with complex metadata
-        content = "Complex test memory"
-        tags = ["test", "complex", "metadata"]
-        keywords = ["test", "complex", "keywords"]
-        links = ["link1", "link2", "link3"]
-        context = "Complex test context"
-        category = "Complex test category"
+        """
+        测试记忆元数据在 ChromaDB 存储和检索中的持久性。
+        """
+        # 创建一个包含复杂元数据的记忆
+        content = "复杂测试记忆"
+        tags = ["测试", "复杂", "元数据"]
+        keywords = ["测试", "复杂", "关键词"]
+        links = ["链接1", "链接2", "链接3"]
+        context = "复杂测试上下文"
+        category = "复杂测试类别"
         timestamp = datetime.now().strftime("%Y%m%d%H%M")
         evolution_history = ["evolution1", "evolution2"]
         
@@ -66,11 +75,11 @@ class TestAgenticMemorySystem(unittest.TestCase):
             evolution_history=evolution_history
         )
         
-        # Search for the memory using ChromaDB
+        # 搜索记忆
         results = self.memory_system.search_agentic(content, k=1)
         self.assertGreater(len(results), 0)
         
-        # Verify metadata in search results
+        # 验证搜索结果中的元数据
         result = results[0]
         self.assertEqual(result['content'], content)
         self.assertEqual(result['tags'], tags)

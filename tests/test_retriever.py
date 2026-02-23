@@ -4,15 +4,26 @@ from agentic_memory.retrievers import PersistentChromaRetriever
 
 
 def test_initialization(retriever):
-    """Test ChromaRetriever initializes correctly."""
+    """
+    测试 ChromaRetriever 是否正确初始化。
+    
+    参数：
+        retriever: 被测试的 ChromaRetriever 实例。
+    """
     assert retriever.collection is not None
     assert retriever.embedding_function is not None
 
 
 def test_add_document(retriever, sample_metadata):
-    """Test adding a document with metadata."""
+    """
+    测试向 ChromaRetriever 添加文档的功能。
+    
+    参数：
+        retriever: 被测试的 ChromaRetriever 实例。
+        sample_metadata: 文档的元数据。
+    """
     doc_id = "test_doc_1"
-    document = "This is a test document."
+    document = "这是一个测试文档。"
     
     retriever.add_document(document, sample_metadata, doc_id)
     
@@ -22,9 +33,15 @@ def test_add_document(retriever, sample_metadata):
 
 
 def test_delete_document(retriever, sample_metadata):
-    """Test deleting a document."""
+    """
+    测试从 ChromaRetriever 删除文档的功能。
+    
+    参数：
+        retriever: 被测试的 ChromaRetriever 实例。
+        sample_metadata: 文档的元数据。
+    """
     doc_id = "test_doc_2"
-    retriever.add_document("Test document", sample_metadata, doc_id)
+    retriever.add_document("测试文档", sample_metadata, doc_id)
     
     retriever.delete_document(doc_id)
     
@@ -33,22 +50,33 @@ def test_delete_document(retriever, sample_metadata):
 
 
 def test_search(retriever, sample_metadata):
-    """Test searching for similar documents."""
-    retriever.add_document(
-        "Machine learning is fascinating", sample_metadata, "doc1")
-    retriever.add_document(
-        "Deep learning uses neural networks", sample_metadata, "doc2")
-    retriever.add_document(
-        "Cats are fluffy animals", sample_metadata, "doc3")
+    """
+    测试 ChromaRetriever 的搜索功能。
     
-    results = retriever.search("artificial intelligence", k=2)
+    参数：
+        retriever: 被测试的 ChromaRetriever 实例。
+        sample_metadata: 文档的元数据。
+    """
+    retriever.add_document(
+        "机器学习是一个迷人的领域", sample_metadata, "doc1")
+    retriever.add_document(
+        "深度学习使用神经网络", sample_metadata, "doc2")
+    retriever.add_document(
+        "猫是毛茸茸的动物", sample_metadata, "doc3")
+    
+    results = retriever.search("人工智能", k=2)
     
     assert len(results["ids"][0]) == 2
     assert len(results["documents"][0]) == 2
 
 
 def test_metadata_list_conversion(retriever):
-    """Test that list metadata is properly converted."""
+    """
+    测试元数据列表的转换功能。
+    
+    参数：
+        retriever: 被测试的 ChromaRetriever 实例。
+    """
     metadata = {"tags": ["tag1", "tag2", "tag3"]}
     retriever.add_document("Test doc", metadata, "doc_list")
     
@@ -60,7 +88,12 @@ def test_metadata_list_conversion(retriever):
 
 
 def test_metadata_dict_conversion(retriever):
-    """Test that dict metadata is properly converted."""
+    """
+    测试元数据字典的转换功能。
+    
+    参数：
+        retriever: 被测试的 ChromaRetriever 实例。
+    """
     metadata = {"config": {"nested": "value", "number": 123}}
     retriever.add_document("Test doc", metadata, "doc_dict")
     
