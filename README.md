@@ -300,130 +300,143 @@ class MockLLMController(BaseLLMController):
 
 ---
 
-## 论文核心 Prompt 模板
+## 论文核心逻辑
 
-A-MEM 系统在运行时依次经历三个 Prompt 阶段，对应论文中"笔记生成 → 记忆检索上下文构造 → 记忆演化决策"的完整流程。
+A-MEM 系统按照论文中的四个阶段依次运行，每个阶段均有对应的代码实现。
 
-### Prompt 1：内容分析（`analyze_content`）
+---
 
-**调用位置**：`agentic_memory/memory_system.py` → `AgenticMemorySystem.analyze_content(content)`  
-**对应论文阶段**：Note Generation — 对新输入的记忆内容调用 LLM，以 JSON 格式提取三类结构化元数据，初始化每条 `MemoryNote` 的 `keywords` / `context` / `tags` 字段。
+### MemoryNote 构建
+
+具有原子性，每个记忆单元记录独立概念。每个记忆单元表示为：
+
+$$m_i = \{c_i,\, t_i,\, K_i,\, G_i,\, X_i,\, e_i,\, L_i\}$$
+
+| 符号 | 含义 | 代码字段 |
+|---|---|---|
+| $c_i$ | 原始交互内容（content） | `MemoryNote.content` |
+| $t_i$ | 时间戳（timestamp） | `MemoryNote.timestamp` |
+| $K_i$ | LLM 生成的关键词（keywords） | `MemoryNote.keywords` |
+| $G_i$ | LLM 生成的标签（tags） | `MemoryNote.tags` |
+| $X_i$ | LLM 生成的上下文描述（contextual description），包含隐含语义 | `MemoryNote.context` |
+| $e_i$ | 嵌入向量（embedding），由 ChromaDB 的 SentenceTransformer 函数生成 | ChromaDB 内部存储 |
+| $L_i$ | 链接记忆集合（linked memories） | `MemoryNote.links` |
+
+**第一步**：由原始内容 + 时间戳 + Prompt 模板 $P_{s1}$ 经 LLM 生成 $K_i, G_i, X_i$：
+
+$$K_{i},\ G_{i},\ X_{i} \leftarrow \operatorname{LLM}(c_{i} \| t_{i} \| P_{s1})$$
+
+**对应实现**：`AgenticMemorySystem.analyze_content(content)` — 封装 $P_{s1}$ 并调用 LLM，以结构化 JSON 返回 `keywords` / `context` / `tags`：
 
 ```python
+# analyze_content 中的 P_s1 模板（memory_system.py）
 prompt = """Generate a structured analysis of the following content by:
-    1. Identifying the most salient keywords (focus on nouns, verbs, and key concepts)
+    1. Identifying the most salient keywords ...
     2. Extracting core themes and contextual elements
     3. Creating relevant categorical tags
-
     Format the response as a JSON object:
-    {
-        "keywords": [
-            // several specific, distinct keywords that capture key concepts and terminology
-            // Order from most to least important
-            // Don't include keywords that are the name of the speaker or time
-            // At least three keywords, but don't be too redundant.
-        ],
-        "context":
-            // one sentence summarizing:
-            // - Main topic/domain
-            // - Key arguments/points
-            // - Intended audience/purpose
-        ,
-        "tags": [
-            // several broad categories/themes for classification
-            // Include domain, format, and type tags
-            // At least three tags, but don't be too redundant.
-        ]
-    }
-
+    {"keywords": [...], "context": "...", "tags": [...]}
     Content for analysis:
     """ + content
 ```
 
-| 输入 | 输出字段 |
-|---|---|
-| 原始文本 `content` | `keywords: List[str]`、`context: str`、`tags: List[str]` |
+> **注意**：原始 `add_note` 方法注释写的是 `# Create MemoryNote without llm_controller`，实际上**违反了论文要求**——$K_i, G_i, X_i$ 都应由 LLM 生成，而不是留空。Bug 2 的修复方案（见 Known Issues）正是为此补充了对 `analyze_content` 的调用。
+
+**第二步**：将 $c_i, K_i, G_i, X_i$ 拼接后经编码器 $f_{enc}$ 获得稠密向量 $e_i$：
+
+$$e_i = f_{\text{enc}}\!\left[\operatorname{concat}(c_i,\, K_i,\, G_i,\, X_i)\right]$$
+
+**对应实现**：`ChromaRetriever.add_document()` — 将 `content + keywords + tags + context` 一并传入 `SentenceTransformerEmbeddingFunction`，由 ChromaDB 自动完成向量化存储。
 
 ---
 
-### Prompt 2：邻居记忆格式化模板（`find_related_memories` 内联格式串）
+### 动态链接生成
 
-**调用位置**：`memory_system.py` → `find_related_memories(query, k)` 内部拼接逻辑  
-**对应论文阶段**：Memory Retrieval Context Construction — 将 ChromaDB 向量检索出的 Top-K 近邻记忆序列化为纯文本，作为第三个 Prompt 的 `{nearest_neighbors_memories}` 变量注入。
+Note 通过（语义相似性 + LLM 推理）建立跨领域连接：
+
+- **相似性初筛**：通过余弦相似度 $s_{n,j} = \dfrac{e_n \cdot e_j}{\|e_n\|\|e_j\|}$ 筛选 Top-$k$ 候选。
+
+  **对应实现**：`find_related_memories(query, k)` — 调用 ChromaDB 向量检索，将 Top-k 结果（含 timestamp / content / context / keywords / tags）序列化为纯文本 `neighbors_text`，作为 $P_{s2}$ 的上下文注入 LLM：
+
+  ```python
+  # find_related_memories 中邻居文本的格式化逻辑（Prompt 中间层）
+  memory_str += (
+      f"memory index:{i}\t"
+      f"talk start time:{metadata.get('timestamp', '')}\t"
+      f"memory content: {metadata.get('content', '')}\t"
+      f"memory context: {metadata.get('context', '')}\t"
+      f"memory keywords: {str(metadata.get('keywords', []))}\t"
+      f"memory tags: {str(metadata.get('tags', []))}\n"
+  )
+  ```
+
+- **语义精修**：LLM 分析候选记忆的深层关联（因果关系、概念类比），决定最终链接集合 $L_i$：
+
+  $$L_i \leftarrow \operatorname{LLM}(m_n \| M_{\text{near}}^n \| P_{s2})$$
+
+  **对应实现**：`process_memory()` 中 `strengthen` 动作分支 — LLM 在 `_evolution_system_prompt`（即 $P_{s2}$）的指引下，通过 `suggested_connections` 字段返回应加入 `links` 的邻居 ID 列表：
+
+  ```python
+  if action == "strengthen":
+      suggest_connections = response_json["suggested_connections"]
+      note.links.extend(suggest_connections)   # 写入 L_i
+      note.tags = response_json["tags_to_update"]
+  ```
+
+---
+
+### 记忆自主进化
+
+新记忆 $m_n$ 不仅自身获得链接，还会触发历史记忆 $m_j$ 的元数据更新：
+
+$$m_j^* \leftarrow \operatorname{LLM}(m_n \| \mathcal{M}_{\text{near}}^n \setminus m_j \| m_j \| P_{s3})$$
+
+例如，当学习「量子退火」后，系统自动将历史记忆「模拟退火算法」的标签更新为「优化算法 → 量子计算」。
+
+**对应实现**：`process_memory()` 中 `update_neighbor` 动作分支 — LLM 以 `_evolution_system_prompt`（即 $P_{s3}$）为指引，返回 `new_context_neighborhood` 和 `new_tags_neighborhood`，系统据此原地更新邻居的 `context` / `tags`：
 
 ```python
-# find_related_memories 中的格式化逻辑（memory_system.py）
-memory_str += (
-    f"memory index:{i}\t"
-    f"talk start time:{metadata.get('timestamp', '')}\t"
-    f"memory content: {metadata.get('content', '')}\t"
-    f"memory context: {metadata.get('context', '')}\t"
-    f"memory keywords: {str(metadata.get('keywords', []))}\t"
-    f"memory tags: {str(metadata.get('tags', []))}\n"
-)
+# _evolution_system_prompt（P_s2 / P_s3，memory_system.py __init__ 中定义）
+self._evolution_system_prompt = '''
+    You are an AI memory evolution agent ...
+    The new memory context: {context}
+    content: {content}
+    keywords: {keywords}
+    The nearest neighbors memories:
+    {nearest_neighbors_memories}
+    ...
+    Return JSON: {"should_evolve": ..., "actions": [...],
+                  "suggested_connections": [...],    # L_i
+                  "tags_to_update": [...],
+                  "new_context_neighborhood": [...], # 更新历史记忆 X_j
+                  "new_tags_neighborhood": [...]}    # 更新历史记忆 G_j
+'''
 ```
 
-每行输出格式：
+```python
+# update_neighbor 分支写回逻辑（process_memory）
+elif action == "update_neighbor":
+    for i, tag in enumerate(new_tags_neighborhood):
+        context = new_context_neighborhood[i]
+        memorytmp_idx = indices[i]          # 当前实现用位置索引（见 Known Issues）
+        notetmp = noteslist[memorytmp_idx]
+        notetmp.tags = tag                  # 更新 G_j
+        notetmp.context = context           # 更新 X_j
 ```
-memory index:<i>  talk start time:<ts>  memory content: <text>  memory context: <ctx>  memory keywords: [...]  memory tags: [...]
-```
-
-该文本块直接作为 `{nearest_neighbors_memories}` 填入 Prompt 3，无独立 LLM 调用。
 
 ---
 
-### Prompt 3：记忆演化决策（`_evolution_system_prompt`）
+### 检索相关记忆
 
-**调用位置**：`memory_system.py` → `process_memory(note)` → `LLMController.get_completion()`  
-**对应论文阶段**：Memory Evolution — Agent 综合新记忆与近邻上下文，决定是否演化、执行何种动作，返回更新后的标签与语境。
+检索时以与构建 MemoryNote 相同的编码方式获得查询的密度向量，再通过余弦相似度排序取 Top-$k$：
 
-```
-You are an AI memory evolution agent responsible for managing and evolving a knowledge base.
-Analyze the the new memory note according to keywords and context, also with their several nearest
-neighbors memory. Make decisions about its evolution.
+$$e_q = f_{\text{enc}}(q)$$
 
-The new memory context:
-{context}
-content: {content}
-keywords: {keywords}
+$$s_{q,i} = \frac{e_q \cdot e_i}{\|e_q\|\|e_i\|},\quad e_i \in m_i,\ \forall m_i \in \mathcal{M}$$
 
-The nearest neighbors memories:
-{nearest_neighbors_memories}
+$$\mathcal{M}_{\text{retrieved}} = \{m_i \mid \operatorname{rank}(s_{q,i}) \leq k,\ m_i \in \mathcal{M}\}$$
 
-Based on this information, determine:
-1. Should this memory be evolved? Consider its relationships with other memories.
-2. What specific actions should be taken (strengthen, update_neighbor)?
-   2.1 If choose to strengthen the connection, which memory should it be connected to?
-       Can you give the updated tags of this memory?
-   2.2 If choose to update_neighbor, update the context and tags of these memories.
-       Generate the new context and tags in the sequential order of the input neighbors.
-
-The number of neighbors is {neighbor_number}.
-Return your decision in JSON format:
-{
-    "should_evolve": true or false,
-    "actions": ["strengthen", "update_neighbor"],
-    "suggested_connections": ["neighbor_memory_ids"],
-    "tags_to_update": ["tag_1", ..., "tag_n"],
-    "new_context_neighborhood": ["new context", ..., "new context"],
-    "new_tags_neighborhood": [["tag_1", ..., "tag_n"], ..., ["tag_1", ..., "tag_n"]]
-}
-```
-
-| 占位符 | 来源 |
-|---|---|
-| `{context}` | 新记忆的 `context`（若已由 Prompt 1 填充） |
-| `{content}` | 新记忆原始文本 |
-| `{keywords}` | 新记忆的 `keywords`（若已由 Prompt 1 填充） |
-| `{nearest_neighbors_memories}` | Prompt 2 格式化的邻居文本块 |
-| `{neighbor_number}` | 邻居数量，约束 LLM 输出数组长度 |
-
-**LLM 返回的两种演化动作**：
-
-| 动作 | 效果 |
-|---|---|
-| `strengthen` | 将 `suggested_connections` 中的邻居 ID 加入新记忆的 `links`；用 `tags_to_update` 更新新记忆 `tags` |
-| `update_neighbor` | 用 `new_context_neighborhood[i]` / `new_tags_neighborhood[i]` 更新第 `i` 个邻居的 `context` / `tags` |
+**对应实现**：`search(query, k)` / `search_agentic(query, k)` — 均调用 `ChromaRetriever.search()`，由 ChromaDB 内部完成向量编码与余弦相似度排序，返回 Top-$k$ 记忆。`search_agentic` 在此基础上额外展开每条结果的 `links`，将链接邻居也并入返回集合，构造更丰富的上下文 Prompt。
 
 ---
 
