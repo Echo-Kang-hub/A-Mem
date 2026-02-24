@@ -206,6 +206,100 @@ LLMController(backend="openai", model="gpt-4o-mini", api_key=None)
 
 ---
 
+### 5. `tests/`  单元测试套件
+
+#### 测试文件总览
+
+| 文件 | 测试框架 | 主要测试对象 |
+|---|---|---|
+| `conftest.py` | pytest fixture | `ChromaRetriever` / `PersistentChromaRetriever` 的共享夹具 |
+| `test_memory_system.py` | `unittest.TestCase` | `AgenticMemorySystem` 全流程 |
+| `test_retriever.py` | pytest | `ChromaRetriever` / `PersistentChromaRetriever` |
+| `test_utils.py` | — | `MockLLMController` 测试工具类 |
+
+---
+
+#### `conftest.py`  共享 pytest Fixture
+
+提供四个可跨文件复用的 fixture：
+
+| Fixture | 说明 |
+|---|---|
+| `retriever` | 创建临时 `ChromaRetriever`（`test_memories` 集合），测试结束后调用 `client.reset()` 清理 |
+| `sample_metadata` | 包含 `str`/`list`/`dict`/`int`/`float` 多种类型的标准元数据字典，用于验证序列化/反序列化 |
+| `temp_db_dir` | 使用 `tempfile.mkdtemp()` 创建临时目录，`yield` 后自动 `shutil.rmtree` 清理 |
+| `existing_collection` | 依赖 `temp_db_dir` + `sample_metadata`，预先创建包含一条文档（`existing_doc`）的持久化集合，用于测试"已存在集合"的访问控制场景 |
+
+---
+
+#### `test_memory_system.py`  完整记忆系统测试
+
+使用 `unittest.TestCase`，每个测试通过 `setUp` 创建一个真实的 `AgenticMemorySystem`（需要有效的 OpenAI API Key，否则测试将在 LLM 调用处失败）。
+
+| 测试方法 | 测试内容 | 关键断言 |
+|---|---|---|
+| `test_create_memory` | 创建带完整元数据的记忆（content/tags/keywords/links/context/category/timestamp） | 验证 `read` 返回的对象各字段与输入一致 |
+| `test_memory_metadata_persistence` | 元数据经 ChromaDB 存储后再通过 `search_agentic` 检索，验证持久性 | `result['tags']`、`result['context']`、`result['category']` 与写入值相同 |
+| `test_memory_update` | 通过 `update` 方法修改 content/tags/keywords/context | `search_agentic` 返回更新后的值 |
+| `test_memory_relationships` | 手动为三条记忆互相添加 `links`，再用 `update` 持久化关系 | `read` 后验证 `links` 包含对应 ID |
+| `test_memory_evolution` | 添加三条语义相关的深度学习记忆，触发演化流程 | 每条记忆的 `tags`/`context`/`keywords` 非 None，搜索结果非空 |
+| `test_memory_deletion` | 创建记忆后调用 `delete`，验证双重删除（内存字典 + ChromaDB） | `read` 返回 `None`，`search_agentic` 返回空列表 |
+| `test_memory_consolidation` | 添加多条记忆后强制调用 `consolidate_memories` 重建索引 | 重建后各记忆仍可通过 `search_agentic` 检索到 |
+| `test_find_related_memories` | 添加 Python 相关记忆后查询 `find_related_memories("Python", k=2)` | 返回结果长度 > 0（注意：返回值是 `(str, list)` 元组，断言实际上对元组整体判断，恒为真） |
+| `test_find_related_memories_raw` | 调用 `find_related_memories_raw("Python", k=2)` | 返回值非 None（返回字符串，`assertIsNotNone` 恒为真） |
+| `test_process_memory` | 直接调用 `process_memory(note)` | 返回 `(bool, MemoryNote)`，且 `tags`/`context`/`keywords` 非 None |
+
+**已知问题与风险**：
+- 所有测试均依赖真实 LLM API，无 Mock，不适合离线/CI 场景
+- `test_create_memory` 传入 `links=["链接1", "链接2"]`（list），但 `MemoryNote` 初始化为 `{}`（dict），存在类型不一致隐患
+- `test_find_related_memories` / `test_find_related_memories_raw` 的断言存在逻辑缺陷（见上表），实际验证效果不足
+
+---
+
+#### `test_retriever.py`  向量检索器测试
+
+使用 pytest，测试 `ChromaRetriever` 和 `PersistentChromaRetriever` 两个类：
+
+**`ChromaRetriever` 测试（函数级）**
+
+| 测试函数 | 验证点 |
+|---|---|
+| `test_initialization` | `collection` 与 `embedding_function` 均非 None |
+| `test_add_document` | 添加文档后用 `collection.get(ids=[doc_id])` 直接确认存在 |
+| `test_delete_document` | 删除后 `collection.get` 返回空 |
+| `test_search` | 添加三条文档后搜索，验证返回条数 = k，且 `ids`/`documents` 各有 k 项 |
+| `test_metadata_list_conversion` | `list` 类型元数据经序列化存储、检索后仍为 `list` 且内容正确 |
+| `test_metadata_dict_conversion` | 嵌套 `dict` 元数据存储后仍保持结构 |
+| `test_numeric_string_conversion`（参数化）| `"42"` → `int`；`"3.14"` → `float`；`"-10"` → `int`；`"hello"` → `str`，验证检索器自动类型推断 |
+| `test_search_returns_top_k_results` | 添加 10 条文档后搜索，确认只返回 k=3 条 |
+
+**`TestPersistentChromaRetriever` 测试（类级）**
+
+| 测试方法 | 场景 | 验证点 |
+|---|---|---|
+| `test_creates_new_collection` | 指定空目录新建集合 | `collection` 非 None，`collection_name` 正确，目录存在 |
+| `test_collection_access_control`（4 种参数化）| 已有集合 + `extend=False` → 抛 `ValueError("already exists")`；已有集合 + `extend=True` → 成功并可读数据；新集合无论是否 `extend` → 成功 | 访问控制逻辑完整 |
+| `test_persistence_across_sessions` | Session1 写入 → 删除实例 → Session2 用 `extend=True` 重连 | 重连后文档内容与写入时完全一致 |
+| `test_uses_default_directory_when_none` | 不传 `directory` 参数 | `~/.chromadb` 目录自动创建，测试结束后删除集合 |
+
+---
+
+#### `test_utils.py`  测试工具类
+
+定义 `MockLLMController`，继承 `BaseLLMController`，供需要隔离 LLM 依赖的测试使用（当前 `test_memory_system.py` 中**未使用**，是潜在的改进点）：
+
+```python
+class MockLLMController(BaseLLMController):
+    mock_response = "{}"                    # 可修改，模拟不同 LLM 响应
+
+    def get_completion(...) -> str:         # 直接返回 mock_response，不调用真实 API
+    def get_embedding(...) -> List[float]:  # 返回 384 维全零向量
+```
+
+**推荐用法**：在 `setUp` 中将 `memory_system.llm_controller.llm` 替换为 `MockLLMController` 实例，即可无 API Key 运行全部 `test_memory_system.py` 测试。
+
+---
+
 ## How It Works 
 
 When a new memory is added to the system:
@@ -536,6 +630,34 @@ except Exception as e:
 
 ---
 
+## Known Issues 
+
+### `process_memory` 中的索引错误（核心 Bug）
+
+`find_related_memories` 返回的 `indices` 实为 ChromaDB 搜索结果的**顺序位置编号**（永远是 `[0, 1, 2, ...]`），而 `process_memory` 的 `update_neighbor` 分支使用这些值对 `list(self.memories.values())`（按插入顺序）进行索引访问，导致**更新的是插入顺序靠前的记忆，而非 ChromaDB 返回的语义相关邻居**。
+
+**修复方向**：`find_related_memories` 应返回邻居的真实 `doc_id` 列表；`update_neighbor` 中应直接以 `self.memories[doc_id]` 获取邻居对象，完全绕过位置索引逻辑。
+
+### `analyze_content` 从未在 `add_note` 中调用
+
+`add_note` → `process_memory` 的完整调用链中，均未调用 `analyze_content(content)`。这意味着：
+- 第一条记忆（`self.memories` 为空，直接提前返回）的 `keywords` / `context` / `tags` 永远为空
+- 即便后续记忆触发了演化，`keywords` 字段也不会被 LLM 填充，除非用户手动传入
+
+**修复方向**：在 `add_note` 创建 `MemoryNote` 后（或在 `process_memory` 入口处），对用户未提供值的字段调用 `analyze_content` 补全。
+
+### `MemoryNote.links` 类型不一致
+
+`__init__` 中声明 `links: Optional[Dict]` 并初始化为 `{}`（字典），但 `process_memory` 中使用 `note.links.extend(...)`，多处测试使用 `memory.links.append(...)`，均为列表操作，运行时会抛 `AttributeError`。
+
+**修复方向**：将 `links` 类型统一改为 `List[str]`，初始化为 `[]`。
+
+### `_search` 方法重复调用及结构用法错误
+
+`_search` 对 `self.retriever.search(query, k)` 调用了两次（结果完全相同），第二次的返回值被当作 `List[Dict]` 迭代并调用 `.get('id')`，但实际返回类型是 ChromaDB 原生格式的 `Dict`，导致去重逻辑是死代码，从不生效。
+
+---
+
 ## Running Tests 
 
 ```bash
@@ -548,6 +670,8 @@ pytest tests/test_memory_system.py -v
 # 运行带覆盖率报告（需安装 pytest-cov）
 pytest tests/ --cov=agentic_memory
 ```
+
+> **注意**：`test_memory_system.py` 中所有测试均需要有效的 OpenAI API Key 才能运行，因为测试未使用 Mock LLM。可将 `AgenticMemorySystem` 的 `llm_controller.llm` 替换为 `test_utils.py` 中提供的 `MockLLMController` 来实现离线测试。
 
 ---
 
